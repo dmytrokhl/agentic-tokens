@@ -49,13 +49,14 @@ export async function getAccessToken() {
   return accessToken;
 }
 
-export async function callVgs(baseUrl, method, path, body) {
+export async function callVgs(baseUrl, method, path, body, { sensitive = false } = {}) {
   const token = await getAccessToken();
   const url = `${baseUrl}${path}`;
+  const logUrl = sensitive ? `${baseUrl}${path.split("?")[0].replace(/(\/otp)\/.+$/, "$1/[REDACTED]")}` : url;
   if (body) {
-    console.log(`→ ${method} ${url}\n  Authorization: Bearer ${token}\n  body: ${formatLogPayload(body)}`);
+    console.log(`→ ${method} ${logUrl}\n  Authorization: [REDACTED]\n  body: ${sensitive ? "[sensitive payload omitted]" : formatLogPayload(body)}`);
   } else {
-    console.log(`→ ${method} ${url}\n  Authorization: Bearer ${token}`);
+    console.log(`→ ${method} ${logUrl}\n  Authorization: [REDACTED]`);
   }
   let res;
   try {
@@ -68,14 +69,14 @@ export async function callVgs(baseUrl, method, path, body) {
       ...(body && { body: JSON.stringify(body) }),
     });
   } catch (err) {
-    throw new Error(`${method} ${url} network failed: ${err.message}`, { cause: err });
+    throw new Error(`${method} ${logUrl} network failed: ${err.message}`, { cause: err });
   }
 
   let text = "";
   try {
     text = await res.text();
   } catch (err) {
-    throw new Error(`${method} ${url} response read failed: ${err.message}`, { cause: err });
+    throw new Error(`${method} ${logUrl} response read failed: ${err.message}`, { cause: err });
   }
 
   let data = null;
@@ -86,7 +87,7 @@ export async function callVgs(baseUrl, method, path, body) {
       data = { raw: text };
     }
   }
-  console.log(`← ${res.status} ${formatLogPayload(data ?? text)}`);
+  console.log(`← ${res.status} ${sensitive ? "[sensitive payload omitted]" : formatLogPayload(data ?? text)}`);
   return { status: res.status, data };
 }
 
@@ -153,7 +154,7 @@ function redactSensitiveFields(value) {
 }
 
 function isSensitiveKey(key) {
-  return /^(pan|cvc|cvv|number|card_number|security_code|cryptogram|otp)$/i.test(key);
+  return /^(pan|cvc|cvv|number|card_number|security_code|cryptogram|otp|otpValue|assuranceData|assurance_data|additionalData|methodAttributes|method_attributes)$/i.test(key);
 }
 
 function isSandboxConfig() {

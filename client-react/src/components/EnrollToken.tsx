@@ -76,7 +76,9 @@ export function EnrollToken({ consumerEmail, setConsumerEmail }: Props) {
           : null;
         setState((s) => ({
           ...s, tokenId, network, otpContext, consumerEmail,
-          completedSteps: new Set([...s.completedSteps].filter((step) => step !== "deleteEnrollment")),
+          enrollmentVersion: s.enrollmentVersion + 1,
+          otpVerifiedTokenId: null, intentId: null, assuranceData: null,
+          completedSteps: new Set([...s.completedSteps].filter((step) => step === "card")),
           amexDeviceContext: isAmex && state.cardId ? {
             cardId: state.cardId, deviceId, ipAddress, formFactor,
             language: navigator.language, browserUserAgent: navigator.userAgent,
@@ -128,6 +130,7 @@ export function EnrollToken({ consumerEmail, setConsumerEmail }: Props) {
           intentId: null,
           assuranceData: null,
           otpContext: null,
+          otpVerifiedTokenId: null,
           amexDeviceContext: null,
           cardholderVerification: null,
           agenticEnrollmentRequired: false,

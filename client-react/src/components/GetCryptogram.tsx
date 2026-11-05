@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useOtpInput } from "../useOtpInput";
 import { paymentOutcome, paymentRiskAttributes, type PaymentChallenge } from "../amex";
-import { requestOtp, submitOtp } from "../idv";
+import { idvErrorInfo, idvErrorPayload, requestOtp, submitOtp } from "../idv";
 import { apiResponse } from "../api";
 import { useAppState, useStepStatus } from "../useAppState";
 import { CRYPTOGRAM_STYLE } from "../flow";
@@ -29,6 +29,8 @@ export function GetCryptogram() {
   const isScof = cryptogramStyle === "scof";
   const isAmex = cryptogramStyle === "amex";
   const isCardScoped = isAmex || isScof;
+  const requiresOtp = isScof || state.cardholderVerification === "otp";
+  const idvReady = !requiresOtp || (state.completedSteps.has("idv") && state.otpVerifiedTokenId === state.tokenId);
 
   // Visa transaction-context (cart) fields.
   const [txnAmount, setTxnAmount] = useState("5.33");
@@ -53,6 +55,7 @@ export function GetCryptogram() {
   const [finalResult, setFinalResult] = useState<unknown>(null);
 
   async function handleGet() {
+    if (!idvReady || state.loadingSteps.size > 0) return;
     setLoading("cryptogram", true);
     log(`Step ${num}: Getting cryptogram...`);
     if (isAmex) setState((s) => {
@@ -144,6 +147,7 @@ export function GetCryptogram() {
   async function handlePaymentOtp(verify: boolean) {
     if (!challenge) return;
     setLoading("cryptogram", true);
+    setResponse(null);
     try {
       if (!verify) {
         setResponse(await requestOtp(state.tokenId!, challenge.clientRefId, selectedMethod));
@@ -155,7 +159,6 @@ export function GetCryptogram() {
         setResponse(body);
         if (!body.data?.attributes?.result) {
           const message = "OTP was processed but no payment credential was returned. The payment is not complete; inspect the API response before retrying.";
-          setResponse({ error: message, response: body });
           log(`Step ${num}: ${message}`);
           setLoading("cryptogram", false);
           return;
@@ -169,7 +172,7 @@ export function GetCryptogram() {
       }
     } catch (err) {
       log(`Step ${num}: ${(err as Error).message}`);
-      setResponse({ error: (err as Error).message });
+      setResponse((previous: unknown) => idvErrorInfo(err).status !== undefined ? idvErrorPayload(err) : previous ?? idvErrorPayload(err));
     }
     setLoading("cryptogram", false);
   }
@@ -241,7 +244,8 @@ export function GetCryptogram() {
           <Field label="Partner authentication"><select className="input" value={partnerMethod} onChange={(e) => setPartnerMethod(e.target.value as typeof partnerMethod)}><option value="N">No partner step-up (user not present)</option><option value="U">Unsuccessful partner step-up</option></select></Field>
           <p className="text-xs text-gray-500 mt-2">This demo does not perform partner SMS, device or passkey authentication. Amex may request its own verification.</p>
         </>}
-        <Button onClick={handleGet} disabled={loading || Boolean(challenge)}>
+        {!idvReady && <p className="text-sm text-amber-700">Complete cardholder verification before requesting a payment credential.</p>}
+        <Button onClick={handleGet} disabled={state.loadingSteps.size > 0 || Boolean(challenge) || !idvReady}>
           {isAmex ? "Get Credential" : isScof ? "Checkout" : "Get Cryptogram"}
         </Button>
         {challenge && <>

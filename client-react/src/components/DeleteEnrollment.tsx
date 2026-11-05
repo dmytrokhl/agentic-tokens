@@ -52,6 +52,7 @@ export function DeleteEnrollment() {
             intentId: null,
             assuranceData: null,
             otpContext: null,
+            otpVerifiedTokenId: null,
             amexDeviceContext: null,
             cardholderVerification: null,
             agenticEnrollmentRequired: false,

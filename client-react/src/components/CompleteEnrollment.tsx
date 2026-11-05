@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { completeEnrollment, idvErrorInfo } from "../idv";
+import { completeEnrollment, idvErrorInfo, idvErrorPayload } from "../idv";
 import { useAppState, useStepStatus } from "../useAppState";
 import { Step } from "./Step";
 import { Field, Button } from "./ui";
@@ -32,7 +32,7 @@ export function CompleteEnrollment({ consumerEmail }: Props) {
     } catch (err) {
       const info = idvErrorInfo(err);
       log(`Step ${num}: Error — ${info.error}`);
-      setResponse(info);
+      setResponse(idvErrorPayload(err));
       setLoading("agenticEnroll", false);
     }
   }
