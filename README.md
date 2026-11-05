@@ -17,6 +17,13 @@ docker compose up --build
 
 Open https://localhost:4200 (accept the self-signed certificate warning).
 
+Frontend source changes reload through the development volume. Server routes are
+baked into the image; after changing `server/`, rebuild and recreate that service:
+
+```bash
+docker compose up -d --no-deps --build server
+```
+
 ## Architecture
 
 - **Caddy** (port 4200) — serves the static frontend over HTTPS
@@ -51,7 +58,58 @@ configure — the header shows which flow was detected.
 A vault may also report `cardholder_verification: "none"` — no verification step at all — in
 which case the app goes straight from enrollment to creating an intent.
 
-Both flows above are Visa. Mastercard runs Create Card → Enroll Token → Checkout Cryptogram. Amex runs Create Card → Enroll Token → Get Payment Credential through the Amex ACE endpoint. Amex adds OTP verification when enrollment returns `cardholder_verification: "otp"`, using the returned `client_ref_id` and `stepUpRequest`. Older responses without these fields keep the existing flow. Neither network uses intents or confirmation. Amex payment credentials can also require OTP; the app handles it inside the payment step and only marks the payment complete when the final credential arrives.
+Both flows above are Visa. Mastercard now uses the same simple verification panel
+as Amex, with one extra step to retrieve the available OTP methods:
+
+- Mastercard: Create Card → Enroll Token → Get Verification Options → Cardholder
+  Verification → Checkout Cryptogram.
+- Amex: Create Card → Enroll Token → Cardholder Verification (when enrollment asks
+  for OTP) → Get Payment Credential. Amex supplies its options during enrollment.
+
+Both use the shared `/agentic-tokens/{token_id}/otp/{identifier}` and
+`/agentic-tokens/{token_id}/otp` endpoints. Mastercard lookup uses
+`GET /agentic-tokens/{token_id}/step-up-options?client_ref_id=vgs:ms:v1:<uuid>`.
+The demo generates that marker automatically. It treats method identifiers and
+references as opaque: the original lookup reference is used to send/resend a code,
+while the latest `client_ref_id` returned by delivery or pending verification is
+used to check the code. No customer-facing correlation, affinity, locale or session
+fields are needed. The old Mastercard-only Start/Complete panels and proxy routes
+have been removed. Maranui exposes OTP through the common endpoints; credential
+issuance uses the shared card-scoped `/cryptograms` endpoint.
+
+Choose SMS or email, press **Send Code**, then **Verify Code**. Mastercard starts
+with an empty code field; no sandbox code is assumed. Only `status: VALIDATED`
+completes Mastercard verification. `PENDING`, rejection, malformed responses and
+HTTP errors do not enable checkout. New lookup, changing channels, resending,
+changing the card and re-enrollment invalidate previous verification. Expired
+context errors offer **Get New Verification Options**. There are no automatic
+OTP retries. Verification state lives only in browser memory.
+
+The same verification UI preserves Amex/Visa references when the API doesn't
+return a replacement. Visa's separate enrollment/passkey flows and Amex payment
+credential OTP challenges remain available. Mastercard shared OTP verifies the
+cardholder; it does not perform FIDO registration/binding or turn issuer proof into
+payment proof. The SCOF checkout remains separate.
+
+Deploy the updated Maranui shared OTP implementation before using this demo flow.
+No additional OTP secret or environment variable is required. Continuation
+references use Base64url-encoded JSON, not encryption or a signature; clients
+should return them unchanged. Restart existing OTP flows from lookup when moving
+from the encrypted format. The demo displays complete API response bodies, including error envelopes,
+metadata and continuation references, without additional client-side redaction.
+The shared proxy still omits OTP payloads from server logs, including sandbox debug
+mode.
+
+To exercise both channels against a local simulated Maranui through Express and
+Netlify, without sending real codes:
+
+```sh
+node --experimental-strip-types --test server/tests/mastercard-otp-flow.test.mjs
+cd client-react && npm test && npm run build
+```
+
+The tests cover lookup, delivery, rejection, pending reference rotation, successful
+verification and resend. They do not validate real issuer delivery.
 
 Each step auto-populates IDs into the next step.
 

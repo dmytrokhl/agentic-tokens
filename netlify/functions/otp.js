@@ -1,26 +1,19 @@
-import { callVgs, config } from "../../server/vgs.js";
-import { json, requireTokenId, wrap } from "./_lib.js";
+import { sendOrVerifyOtp } from "../../server/otp.js";
+import { json, wrap } from "./_lib.js";
 
-// /api/otp — the two OTP calls of the ID&V flow, split by whether the path carries a
-// method identifier:
-//   POST /api/otp/{identifier}?tokenId=  → deliver the code via that method
-//   POST /api/otp?tokenId=               → verify the code the cardholder entered
-// Netlify redirect placeholders don't substitute into the query string of the `to` target,
-// so the identifier is read from the original request path (same as agentic-tokens.js).
+// The original path carries the opaque method identifier; decode once, then the
+// shared proxy encodes it as a single upstream path segment.
 export default wrap(async (req) => {
+  if (req.method !== "POST") return json(405, { error: "Method not allowed" });
   const url = new URL(req.url);
-  const tokenId = requireTokenId(url);
-  if (req.method !== "POST") return json(405, { error: `Method ${req.method} not allowed` });
-
-  const match = url.pathname.match(/\/api\/otp\/(.+)$/);
-  const identifier = match?.[1];
-  const body = await req.json();
-
-  // Identifiers are opaque base64 — re-encode so "/" or "=" can't reshape the path.
-  const path = identifier
-    ? `/agentic-tokens/${tokenId}/otp/${encodeURIComponent(decodeURIComponent(identifier))}`
-    : `/agentic-tokens/${tokenId}/otp`;
-
-  const { status, data } = await callVgs(config.apiUrl, "POST", path, body);
+  let body, identifier;
+  try {
+    body = await req.json();
+    const match = url.pathname.match(/\/api\/otp\/(.+)$/);
+    identifier = match ? decodeURIComponent(match[1]) : undefined;
+  } catch {
+    return json(400, { error: "Invalid JSON request or method identifier" });
+  }
+  const { status, data } = await sendOrVerifyOtp(url.searchParams.get("tokenId"), identifier, body);
   return json(status, data);
 });

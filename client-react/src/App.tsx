@@ -3,6 +3,7 @@ import { AppStateProvider, useAppState } from "./useAppState";
 import { CARDHOLDER_VERIFICATION_META, type CardholderVerification, type StepKey } from "./flow";
 import { CreateCard } from "./components/CreateCard";
 import { EnrollToken } from "./components/EnrollToken";
+import { OtpOptions } from "./components/OtpOptions";
 import { DeviceBinding } from "./components/DeviceBinding";
 import { CardholderIdv } from "./components/CardholderIdv";
 import { CompleteEnrollment } from "./components/CompleteEnrollment";
@@ -35,11 +36,12 @@ function AppContent() {
   const stepBlocks: Record<StepKey, ReactNode> = {
     card: <CreateCard />,
     enroll: <EnrollToken consumerEmail={consumerEmail} setConsumerEmail={setConsumerEmail} />,
+    otpOptions: <OtpOptions key={`${state.cardId}:${state.tokenId}:${state.enrollmentVersion}`} />,
     deviceBinding: <DeviceBinding consumerEmail={consumerEmail} />,
-    idv: <CardholderIdv key={state.otpContext?.clientRefId ?? "visa"} consumerEmail={consumerEmail} />,
+    idv: <CardholderIdv key={`${state.cardId}:${state.tokenId}:${state.enrollmentVersion}:${state.otpContext?.clientRefId ?? "lookup"}`} consumerEmail={consumerEmail} />,
     agenticEnroll: <CompleteEnrollment consumerEmail={consumerEmail} />,
     intent: <CreateIntent />,
-    cryptogram: <GetCryptogram key={`${state.network}:${state.cardId}:${state.tokenId}`} />,
+    cryptogram: <GetCryptogram key={`${state.network}:${state.cardId}:${state.tokenId}:${state.enrollmentVersion}:${state.otpVerifiedTokenId}`} />,
     confirm: <ConfirmTransaction />,
     deleteEnrollment: <DeleteEnrollment key={state.cardId ?? "amex"} />,
   };
@@ -57,7 +59,7 @@ function AppContent() {
       </div>
       <p className="text-gray-500 text-sm mb-4">Step-by-step integration reference for the VGS Agentic Tokens API</p>
 
-      <FlowIndicator verification={state.cardholderVerification} />
+      <FlowIndicator verification={state.network === "mastercard" && state.tokenId ? "otp" : state.cardholderVerification} />
 
       {flow.map((key) => (
         <Fragment key={key}>{stepBlocks[key]}</Fragment>

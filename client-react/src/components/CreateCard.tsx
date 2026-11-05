@@ -12,7 +12,7 @@ const FIELD_CSS = {
   "&::placeholder": { color: "#9ca3af" },
 };
 
-type CardOption = "visa1" | "visa2" | "mastercard" | "amexTest1" | "amexTest2" | "amex" | "amexOtp" | "custom";
+type CardOption = "visa1" | "visa2" | "mastercard" | "mastercardIdv" | "amexTest1" | "amexTest2" | "amex" | "amexOtp" | "custom";
 
 interface TestCard {
   id: CardOption;
@@ -27,6 +27,7 @@ const TEST_CARDS: TestCard[] = [
   { id: "visa1", label: "Visa — ...1569 / CVV 814 / 12/27", pan: "4622943123121569", cvv: "814", exp: "12 / 27", network: "visa" },
   { id: "visa2", label: "Visa — ...1478 / CVV 845 / 12/27", pan: "4622943123121478", cvv: "845", exp: "12 / 27", network: "visa" },
   { id: "mastercard", label: "Mastercard — ...4574 / CVV 123 / 12/27", pan: "2222690420064574", cvv: "123", exp: "12 / 27", network: "mastercard" },
+  { id: "mastercardIdv", label: "Mastercard — ...3496 / CVV 123 / 12/27", pan: "5387980000003496", cvv: "123", exp: "12 / 27", network: "mastercard" },
   { id: "amexTest1", label: "Amex — ...1009 / CID 1111 / 12/27 (Test 1)", pan: "378685943191009", cvv: "1111", exp: "12 / 27", network: "amex" },
   { id: "amexTest2", label: "Amex — ...1005 / CID 1111 / 12/27 (Test 2)", pan: "379258102641005", cvv: "1111", exp: "12 / 27", network: "amex" },
   { id: "amex", label: "Amex — ...1003 / CID 1111 / 12/27 (Test 3)", pan: "379258101671003", cvv: "1111", exp: "12 / 27", network: "amex" },
@@ -37,7 +38,7 @@ export function CreateCard() {
   const { state, setState, log, setLoading, completeStep } = useAppState();
   const { loading, num } = useStepStatus("card");
   const [response, setResponse] = useState<unknown>(null);
-  const [option, setOption] = useState<CardOption>("visa1");
+  const [option, setOption] = useState<CardOption>("mastercardIdv");
   const [formInitialized, setFormInitialized] = useState(false);
   // Latest card type reported by Collect.js — used to detect the network for
   // custom PANs entered in the secure iframe (preset cards use their known PAN).
@@ -179,7 +180,10 @@ export function CreateCard() {
       const cardId = result?.data?.data?.id;
       if (cardId) {
         const network = resolveNetwork();
-        setState((s) => ({ ...s, cardId, network }));
+        setState((s) => ({ ...s, cardId, network, tokenId: null, otpContext: null, otpVerifiedTokenId: null, intentId: null, assuranceData: null,
+          cardholderVerification: null, agenticEnrollmentRequired: false,
+          completedSteps: new Set(),
+        }));
         log(`Step ${num}: Card created — ${cardId} (${network})`);
         completeStep("card");
       } else {

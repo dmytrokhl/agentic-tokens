@@ -33,6 +33,8 @@ export interface AppState {
   consumerEmail: string;
   cardId: string | null;
   tokenId: string | null;
+  enrollmentVersion: number;
+  otpVerifiedTokenId: string | null;
   intentId: string | null;
   assuranceData: unknown[] | null;
   /** Resolved card network — drives which steps are shown. Defaults to visa. */
@@ -61,6 +63,8 @@ function initialState(): AppState {
     consumerEmail: "",
     cardId: null,
     tokenId: null,
+    enrollmentVersion: 0,
+    otpVerifiedTokenId: null,
     intentId: null,
     assuranceData: null,
     network: DEFAULT_NETWORK,

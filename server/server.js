@@ -2,6 +2,7 @@ import express from "express";
 import { config as loadEnv } from "dotenv";
 import { config as vgsConfig, callVgs, getAccessToken, hasCredentials } from "./vgs.js";
 import { enrichCardSurface, enrichMissingCardSurfaces } from "./card-surface.js";
+import { getOtpOptions, sendOrVerifyOtp } from "./otp.js";
 
 loadEnv();
 
@@ -14,6 +15,12 @@ app.use((req, res, next) => {
   next();
 });
 app.use(express.json());
+app.use((err, req, res, next) => {
+  if (req.path.startsWith("/api/otp") && err.type === "entity.parse.failed") {
+    return res.status(400).json({ error: "Invalid JSON request" });
+  }
+  next(err);
+});
 
 const PORT = process.env.PORT || 3000;
 
@@ -71,41 +78,19 @@ app.delete("/api/amex-enrollments", handler(async (req, res) => {
   res.status(status).json(data);
 }));
 
-// --- Cardholder ID&V (passkey-exempt vaults) ---
-// The browser drives these through this proxy; see client-react/src/idv.ts.
-
-// GET /api/step-up-options?tokenId=&clientRefId= — verification options.
-// client_ref_id is required by the API and must be URL-safe (letters, digits, . _ : -).
+// Shared Visa / Amex / Mastercard OTP flow.
 app.get("/api/step-up-options", handler(async (req, res) => {
-  const { tokenId, clientRefId } = req.query;
-  const query = new URLSearchParams({ client_ref_id: clientRefId ?? "" });
-  const { status, data } = await callVgs(
-    vgsConfig.apiUrl, "GET",
-    `/agentic-tokens/${tokenId}/step-up-options?${query}`
-  );
+  const { status, data } = await getOtpOptions(req.query.tokenId, req.query.clientRefId);
   res.status(status).json(data);
 }));
 
-// POST /api/otp/:identifier?tokenId= — deliver the code via the chosen method
 app.post("/api/otp/:identifier", handler(async (req, res) => {
-  const { tokenId } = req.query;
-  const { status, data } = await callVgs(
-    vgsConfig.apiUrl, "POST",
-    // Identifiers are opaque base64 — re-encode so "/" or "=" can't reshape the path.
-    `/agentic-tokens/${tokenId}/otp/${encodeURIComponent(req.params.identifier)}`,
-    req.body
-  );
+  const { status, data } = await sendOrVerifyOtp(req.query.tokenId, req.params.identifier, req.body);
   res.status(status).json(data);
 }));
 
-// POST /api/otp?tokenId= — verify the code (completes ID&V)
 app.post("/api/otp", handler(async (req, res) => {
-  const { tokenId } = req.query;
-  const { status, data } = await callVgs(
-    vgsConfig.apiUrl, "POST",
-    `/agentic-tokens/${tokenId}/otp`,
-    req.body
-  );
+  const { status, data } = await sendOrVerifyOtp(req.query.tokenId, undefined, req.body);
   res.status(status).json(data);
 }));
 
