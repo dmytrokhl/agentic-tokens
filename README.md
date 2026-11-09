@@ -111,6 +111,20 @@ cd client-react && npm test && npm run build
 The tests cover lookup, delivery, rejection, pending reference rotation, successful
 verification and resend. They do not validate real issuer delivery.
 
+For Visa v2 Europe, open `?flow=visa-v2-europe` on the demo URL.
+Create a Visa sandbox card and enroll it with a consumer email.
+Enter the authentication amount, currency, merchant name, and HTTPS merchant URL.
+Use **Prepare browser verification**, then complete each action that Visa requests.
+Create a purchase request and complete its separate PAYMENT authentication before requesting a credential.
+The first credential request also creates the Visa instruction.
+The demo reports a selected sandbox outcome. It does not charge the card or establish settlement.
+
+Set `AGENTIC_VISA_EU_CALLBACK_URL` on the demo server to the HTTPS callback URL approved for your integration.
+Without this setting, the demo uses `/visa-3ds-callback.html` on its HTTPS origin.
+Configure exact frontend origins in the deployed callback handler before testing.
+Device-binding currency fields show numeric codes, such as `840 — USD`.
+Purchase currency fields show letter codes, such as `USD`.
+
 Each step auto-populates IDs into the next step.
 
 After a successful Amex enrollment, a separate **Unenrollment (Amex)** block is

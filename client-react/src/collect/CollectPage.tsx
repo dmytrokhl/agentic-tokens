@@ -55,6 +55,7 @@ export function CollectPage() {
       try {
         const cfg = await fetchConfig();
         if (cancelled) return;
+        if (cfg.mockMode) throw new Error("Card collection is disabled in local mock mode. Open / to create a synthetic fixture card.");
         if (!cfg.vaultId) throw new Error("VGS vault not configured on server");
         await loadCollectJs(cfg.collectJsUrl);
         if (!window.VGSCollect) throw new Error("Collect.js failed to load");

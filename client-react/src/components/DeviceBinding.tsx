@@ -1,3 +1,4 @@
+import { CurrencyField } from "./CurrencyField";
 import { useEffect, useRef, useState } from "react";
 import { fetchAccessToken } from "../api";
 import { useAppState, useStepStatus } from "../useAppState";
@@ -177,16 +178,7 @@ export function DeviceBinding({ consumerEmail }: Props) {
         <Field label="Authentication Amount">
           <input className="input" value={authAmount} onChange={(e) => setAuthAmount(e.target.value)} />
         </Field>
-        <Field label="Currency Code">
-          <select className="input" value={currencyCode} onChange={(e) => setCurrencyCode(e.target.value)}>
-            <option value="840">840 — USD</option>
-            <option value="978">978 — EUR</option>
-            <option value="826">826 — GBP</option>
-            <option value="392">392 — JPY</option>
-            <option value="036">036 — AUD</option>
-            <option value="124">124 — CAD</option>
-          </select>
-        </Field>
+        <CurrencyField numeric value={currencyCode} onChange={setCurrencyCode} />
       </Row>
       <Field label="Merchant Name (optional)">
         <input className="input" placeholder="e.g. Best Buy" value={merchantName} onChange={(e) => setMerchantName(e.target.value)} />

@@ -40,24 +40,34 @@ export async function api(method: string, path: string, body?: object): Promise<
 
 export async function fetchAccessToken(): Promise<string> {
   const res = await fetch("/api/token");
+  if (!res.ok) throw new Error("Access token request failed.");
   const data = await res.json();
+  if (typeof data.access_token !== "string" || !data.access_token) throw new Error("Access token unavailable.");
   return data.access_token;
 }
 
 export interface AppConfig {
+  visaEuCallbackUrl?: string;
+  visaEnvironment?: "local" | "dev" | "sandbox" | null;
   vaultId: string;
   vaultEnv: string;
   collectJsUrl: string;
+  mockMode?: "vic-v2-europe" | null;
+  mockSdk?: { apiOrigin: string; vppOrigin: string; callbackOrigin: string };
+  mockScenarios?: import("./sample-journeys").MockScenario[];
+  mockScenario?: import("./sample-journeys").MockScenario;
 }
 
 export async function fetchConfig(): Promise<AppConfig> {
   const res = await fetch("/api/config");
+  if (!res.ok) throw new Error("Runtime configuration unavailable.");
   return res.json();
 }
 
 const collectJsLoaded: Partial<Record<string, Promise<void>>> = {};
 
 export function loadCollectJs(url: string): Promise<void> {
+  if (!url.trim()) return Promise.reject(new Error("Collect is unavailable in the EU local simulator; use a configured provider runtime."));
   if (collectJsLoaded[url]) return collectJsLoaded[url];
   collectJsLoaded[url] = new Promise<void>((resolve, reject) => {
     const script = document.createElement("script");

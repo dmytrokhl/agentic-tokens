@@ -3,6 +3,7 @@ import { api } from "../api";
 import { useAppState, useStepStatus } from "../useAppState";
 import { Step } from "./Step";
 import { Field, Row, Button } from "./ui";
+import { CurrencyField } from "./CurrencyField";
 
 export function CreateIntent() {
   const { state, setState, log, setLoading, completeStep } = useAppState();
@@ -90,9 +91,7 @@ export function CreateIntent() {
         <Field label="Amount">
           <input className="input" type="number" step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} />
         </Field>
-        <Field label="Currency">
-          <input className="input" value={currency} onChange={(e) => setCurrency(e.target.value)} />
-        </Field>
+        <CurrencyField value={currency} onChange={setCurrency} />
       </Row>
       <Row>
         <Field label="Quantity">

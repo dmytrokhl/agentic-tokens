@@ -12,7 +12,7 @@ const FIELD_CSS = {
   "&::placeholder": { color: "#9ca3af" },
 };
 
-type CardOption = "visa1" | "visa2" | "mastercard" | "mastercardIdv" | "amexTest1" | "amexTest2" | "amex" | "amexOtp" | "custom";
+type CardOption = "visa1" | "visa2" | "mastercard" | "mastercardIdv" | "amexTest1" | "amexTest2" | "amex" | "amexOtp" | "visaEu3ds" | "custom";
 
 interface TestCard {
   id: CardOption;
@@ -26,6 +26,7 @@ interface TestCard {
 const TEST_CARDS: TestCard[] = [
   { id: "visa1", label: "Visa — ...1569 / CVV 814 / 12/27", pan: "4622943123121569", cvv: "814", exp: "12 / 27", network: "visa" },
   { id: "visa2", label: "Visa — ...1478 / CVV 845 / 12/27", pan: "4622943123121478", cvv: "845", exp: "12 / 27", network: "visa" },
+  { id: "visaEu3ds", label: "Visa — ...0040 / CVV 449 / 12/27 / (EU 3DS)", pan: "4395840142700040", cvv: "449", exp: "12 / 27", network: "visa" },
   { id: "mastercard", label: "Mastercard — ...4574 / CVV 123 / 12/27", pan: "2222690420064574", cvv: "123", exp: "12 / 27", network: "mastercard" },
   { id: "mastercardIdv", label: "Mastercard — ...3496 / CVV 123 / 12/27", pan: "5387980000003496", cvv: "123", exp: "12 / 27", network: "mastercard" },
   { id: "amexTest1", label: "Amex — ...1009 / CID 1111 / 12/27 (Test 1)", pan: "378685943191009", cvv: "1111", exp: "12 / 27", network: "amex" },
@@ -34,11 +35,20 @@ const TEST_CARDS: TestCard[] = [
   { id: "amexOtp", label: "Amex — ...1000 / CID 1111 / 12/27 (OTP required)", pan: "379843270071000", cvv: "1111", exp: "12 / 27", network: "amex" },
 ];
 
-export function CreateCard() {
-  const { state, setState, log, setLoading, completeStep } = useAppState();
-  const { loading, num } = useStepStatus("card");
-  const [response, setResponse] = useState<unknown>(null);
-  const [option, setOption] = useState<CardOption>("mastercardIdv");
+interface CollectCardFormProps {
+  loading: boolean;
+  onLoading: (loading: boolean) => void;
+  onCreated: (card: { cardId: string; network: Network }) => void;
+  onResponse: (response: unknown) => void;
+  log: (message: string) => void;
+  visaOnly?: boolean;
+  currentCard?: { cardId: string; network: Network };
+}
+
+export function CollectCardForm({ loading, onLoading, onCreated, onResponse, log, visaOnly = false, currentCard }: CollectCardFormProps) {
+  const [created, setCreated] = useState<{ cardId: string; network: Network } | null>(null);
+  const displayedCard = currentCard ?? created;
+  const [option, setOption] = useState<CardOption>(visaOnly ? "custom" : "mastercardIdv");
   const [formInitialized, setFormInitialized] = useState(false);
   // Latest card type reported by Collect.js — used to detect the network for
   // custom PANs entered in the secure iframe (preset cards use their known PAN).
@@ -130,28 +140,26 @@ export function CreateCard() {
       placeholder: "Card number",
       css: FIELD_CSS,
       showCardIcon: true,
-      ...(card && { prefillValue: card.pan }),
+      ...(card?.pan && { prefillValue: card.pan }),
     });
     const cvcField = form.cardCVCField("#cc-cvc", {
       placeholder: "CVV",
       css: FIELD_CSS,
-      ...(card && { prefillValue: card.cvv }),
+      ...(card?.cvv && { prefillValue: card.cvv }),
     });
     const expField = form.cardExpirationDateField("#cc-exp", {
       placeholder: "MM / YY",
       yearLength: 2,
       css: FIELD_CSS,
-      ...(card && { prefillValue: card.exp }),
+      ...(card?.exp && { prefillValue: card.exp }),
     });
     fieldsRef.current = { number: numberField, cvc: cvcField, exp: expField };
 
     Promise.all([numberField.promise, cvcField.promise, expField.promise]).then(() => {
       if (cancelled) return;
-      if (card) {
-        numberField.prefill();
-        cvcField.prefill();
-        expField.prefill();
-      }
+      if (card?.pan) numberField.prefill();
+      if (card?.cvv) cvcField.prefill();
+      if (card?.exp) expField.prefill();
       setReadyForOption(option);
     });
 
@@ -172,44 +180,45 @@ export function CreateCard() {
   async function handleCreate() {
     const form = formRef.current;
     if (!form) return;
-    setLoading("card", true);
-    log(`Step ${num}: Creating card via Collect.js…`);
+    onLoading(true);
+    log("Creating card via Collect.js…");
     try {
+      const network = resolveNetwork();
+      if (visaOnly && (option === "custom" || option === "visaEu3ds") && networkFromCardType(cardTypeRef.current) !== "visa") {
+        throw new Error("Use a Visa test card for the Europe journey.");
+      }
       const result = await form.createCard();
-      setResponse(result);
+      onResponse(result);
       const cardId = result?.data?.data?.id;
       if (cardId) {
-        const network = resolveNetwork();
-        setState((s) => ({ ...s, cardId, network, tokenId: null, otpContext: null, otpVerifiedTokenId: null, intentId: null, assuranceData: null,
-          cardholderVerification: null, agenticEnrollmentRequired: false,
-          completedSteps: new Set(),
-        }));
-        log(`Step ${num}: Card created — ${cardId} (${network})`);
-        completeStep("card");
+        const card = { cardId, network };
+        setCreated(card);
+        log(`Card created — ${cardId} (${network})`);
+        onCreated(card);
       } else {
-        log(`Step ${num}: Failed — ` + JSON.stringify(result));
-        setLoading("card", false);
+        log("Card creation failed. Check the response.");
+        onLoading(false);
       }
     } catch (err) {
-      log(`Step ${num}: Error — ` + (err as Error).message);
-      setResponse({ error: (err as Error).message });
-      setLoading("card", false);
+      log("Card creation failed.");
+      onResponse({ error: visaOnly ? "Card creation failed. Check your Visa test card and retry." : (err as Error).message });
+      onLoading(false);
     }
   }
 
   return (
-    <Step stepKey="card" title="Create Card (VGS Collect)" response={response}>
+    <>
       {initError && (
         <div className="bg-red-50 border border-red-300 text-red-700 text-sm rounded p-2 mb-2">
           {initError}
         </div>
       )}
 
-      {state.cardId && (
+      {displayedCard && (
         <div className="text-sm mb-1">
           Detected network:{" "}
-          <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${NETWORK_META[state.network].badgeCss}`}>
-            {NETWORK_META[state.network].label}
+          <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${NETWORK_META[displayedCard.network].badgeCss}`}>
+            {NETWORK_META[displayedCard.network].label}
           </span>
         </div>
       )}
@@ -218,9 +227,10 @@ export function CreateCard() {
         <select
           className="input"
           value={option}
-          onChange={(e) => setOption(e.target.value as CardOption)}
+          disabled={loading}
+          onChange={(e) => { cardTypeRef.current = null; setOption(e.target.value as CardOption); }}
         >
-          {TEST_CARDS.map((c) => (
+          {TEST_CARDS.filter((card) => !visaOnly || card.network === "visa").map((c) => (
             <option key={c.id} value={c.id}>{c.label}</option>
           ))}
           <option value="custom">Enter your own card</option>
@@ -242,6 +252,23 @@ export function CreateCard() {
       <Button onClick={handleCreate} disabled={!fieldsReady || loading}>
         {fieldsReady ? "Create Card" : "Loading Collect.js…"}
       </Button>
-    </Step>
+    </>
   );
+}
+
+export function CreateCard() {
+  const { state, setState, log, setLoading, completeStep } = useAppState();
+  const { loading, num } = useStepStatus("card");
+  const [response, setResponse] = useState<unknown>(null);
+  return <Step stepKey="card" title="Create Card (VGS Collect)" response={response}>
+    <CollectCardForm loading={loading} onLoading={(value) => setLoading("card", value)} onResponse={setResponse}
+      currentCard={state.cardId ? { cardId: state.cardId, network: state.network } : undefined}
+      log={(message) => log(`Step ${num}: ${message}`)} onCreated={({ cardId, network }) => {
+        setState((state) => ({ ...state, cardId, network, tokenId: null, otpContext: null, otpVerifiedTokenId: null,
+          intentId: null, assuranceData: null, cardholderVerification: null, agenticEnrollmentRequired: false,
+          completedSteps: new Set(),
+        }));
+        completeStep("card");
+      }} />
+  </Step>;
 }

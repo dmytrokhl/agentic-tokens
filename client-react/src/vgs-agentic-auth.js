@@ -59,8 +59,7 @@ const ENVIRONMENTS = {
 // const CLIENT_APP_ID = "VGSVicProvisionToken";
 const CLIENT_APP_ID = "VGS";
 
-// Sample-app only: the demo renders the Visa passkey prompt inline, so the iframe is
-// sized instead of hidden. The library ships it 0x0 and leaves sizing to the integrator.
+// The demo shows the Visa passkey prompt inline. Preparation keeps the iframe hidden.
 const VISA_IFRAME_WIDTH = "390";
 const VISA_IFRAME_HEIGHT = "400";
 
@@ -86,6 +85,83 @@ class VgsAgenticAuthError extends Error {
 // ---------------------------------------------------------------------------
 // Private helpers
 // ---------------------------------------------------------------------------
+
+function _verificationError(code, message) {
+  return new VgsAgenticAuthError(message, { code });
+}
+
+function _browserWait({ source, origin, type, requestID, timeout, assertCurrent, checkClosed = false }) {
+  let cancel;
+  let deliverManual;
+  const promise = new Promise((resolve, reject) => {
+    let timer;
+    let poll;
+    let active = true;
+    const cleanup = () => {
+      active = false;
+      clearTimeout(timer);
+      clearInterval(poll);
+      window.removeEventListener("message", handler);
+    };
+    const fail = (error) => { cleanup(); reject(error); };
+    cancel = () => fail(_verificationError("verification_cancelled", "Verification was cancelled"));
+    deliverManual = (data) => {
+      if (!active) throw _verificationError("verification_expired", "Verification attempt has ended");
+      assertCurrent();
+      cleanup();
+      resolve(data);
+    };
+    function handler(event) {
+      if (event.origin !== origin || event.source !== source) return;
+      if (requestID && event.data?.requestID !== requestID) return;
+      if (![type, "AUTH_FAILED", "AUTH_CANCELLED", "AUTH_NOT_SUPPORTED", "AUTH_NOT_PERFORMED"].includes(event.data?.type)) return;
+      try {
+        assertCurrent();
+        if (event.data.type !== type) {
+          throw _verificationError(event.data.type.toLowerCase(), "Visa verification did not complete");
+        }
+        cleanup();
+        resolve(event.data);
+      } catch (error) { fail(error); }
+    }
+    window.addEventListener("message", handler);
+    if (timeout != null) {
+      timer = setTimeout(() => fail(_verificationError("verification_timeout", "Verification timed out")), timeout);
+    }
+    poll = setInterval(() => {
+      try {
+        assertCurrent();
+        if (checkClosed && source.closed) throw _verificationError("verification_cancelled", "Verification window was closed");
+      } catch (error) { fail(error); }
+    }, 100);
+  });
+  return { promise, cancel, deliverManual };
+}
+
+function _callbackAddress(value, mock) {
+  let url;
+  try { url = new URL(value); } catch {
+    throw _verificationError("callback_configuration_required", "A callback URL is required");
+  }
+  if (url.username || url.password || url.hash || url.search || url.protocol !== "https:") {
+    throw _verificationError("callback_configuration_required", "Use an HTTPS callback URL without query parameters");
+  }
+  if (mock) _localOrigin(url.origin);
+  return url;
+}
+
+function _localOrigin(value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new VgsAgenticAuthError("Mock configuration requires an exact loopback origin");
+  }
+  if (!["http:", "https:"].includes(url.protocol) || url.origin !== value ||
+      !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) {
+    throw new VgsAgenticAuthError("Mock configuration requires an exact loopback origin");
+  }
+}
 
 async function _postJson(apiBase, path, body, accessToken) {
   const url = `${apiBase}${path}`;
@@ -135,12 +211,14 @@ function _sendIframeCommand(iframeEl, origin, requestID, extra) {
  * Listen for a single iframe postMessage of a given type.
  * Resolves with event.data. Rejects on timeout. Cleans up automatically.
  */
-function _waitForIframeMessage(origin, expectedType, timeoutMs) {
+function _waitForIframeMessage(origin, expectedType, timeoutMs, context) {
   return new Promise((resolve, reject) => {
     let timer;
 
     function handler(event) {
       if (event.origin !== origin) return;
+      if (context && event.source !== context.source()) return;
+      if (context?.requestID && event.data?.requestID !== context.requestID) return;
       if (event.data?.type !== expectedType) return;
       cleanup();
       resolve(event.data);
@@ -183,19 +261,19 @@ function _transformAssuranceData(rawAssurance, dfpSessionID) {
  * Create a Visa VTS auth iframe and append it to a container.
  * Returns the iframe element once it has been added to the DOM.
  */
-function _createIframe(container, origin, apiKey) {
+function _createIframe(container, origin, apiKey, preparationMode) {
   const src = `${origin}/vts-auth/authenticate?apiKey=${apiKey}&clientAppID=${CLIENT_APP_ID}`;
   const iframe = document.createElement("iframe");
   iframe.src = src;
   iframe.title = "Visa authentication";
-  iframe.width = VISA_IFRAME_WIDTH;
-  iframe.height = VISA_IFRAME_HEIGHT;
+  iframe.width = preparationMode ? "0" : VISA_IFRAME_WIDTH;
+  iframe.height = preparationMode ? "0" : VISA_IFRAME_HEIGHT;
   iframe.style.display = "block";
-  iframe.style.width = "100%";
+  iframe.style.width = preparationMode ? "0" : "100%";
   iframe.style.maxWidth = `${VISA_IFRAME_WIDTH}px`;
-  iframe.style.height = `${VISA_IFRAME_HEIGHT}px`;
+  iframe.style.height = preparationMode ? "0" : `${VISA_IFRAME_HEIGHT}px`;
   iframe.style.border = "none";
-  iframe.allow = "publickey-credentials-get *; publickey-credentials-create *";
+  iframe.allow = `${preparationMode ? "payment *; " : ""}publickey-credentials-get *; publickey-credentials-create *`;
   container.appendChild(iframe);
   return iframe;
 }
@@ -204,6 +282,7 @@ function _createIframe(container, origin, apiKey) {
 // Session
 // ---------------------------------------------------------------------------
 
+const STATE_PREPARED = "prepared";
 const STATE_OTP_METHOD_PENDING = "otp_method_pending";
 const STATE_OTP_PENDING = "otp_pending";
 const STATE_READY = "ready";
@@ -238,6 +317,10 @@ class Session {
     this._dfpSessionID = dfpSessionID;
     this._authContext = null;
     this._sessionClosed = false;
+    this._contextSnapshot = this._currentContext();
+    this._pendingCancel = null;
+    this._manualWebCallback = null;
+    this._popup = null;
 
     const attrs = attestationResult.data.attributes;
 
@@ -245,6 +328,11 @@ class Session {
     // passkey ceremony is required for this tenant. Defaults to true when the field is
     // absent, so older backends and default tenants keep the full-FIDO behavior.
     this.needsPasskey = attrs.passkey_required !== false;
+
+    if (config.preparationMode) {
+      this._setPreparationResult(attrs);
+      return;
+    }
 
     if (
       attrs.status === "CHALLENGE" &&
@@ -347,10 +435,16 @@ class Session {
   }
 
   /**
-   * Run the FIDO ceremony in the iframe and return the transformed assuranceData.
-   * @returns {Promise<Array>}  Ready-to-use assuranceData for intent creation
+   * Continue user verification. Europe sessions separate registration from payment authentication.
+   * @returns {Promise<Array|object>} PAYMENT assurance data or the next pending verification phase.
    */
   async authenticate() {
+    if (this._config.preparationMode && this._state !== STATE_DESTROYED) {
+      if (!this._config.getCheckoutContext) {
+        throw _verificationError("preparation_continuation_unavailable", "Current checkout context is required to continue");
+      }
+      return this._continueEurope();
+    }
     this._guardState(STATE_READY, "authenticate");
 
     // Passkey-exempt tenants skip the FIDO ceremony entirely. The backend supplies the
@@ -408,6 +502,9 @@ class Session {
    */
   destroy() {
     if (this._state === STATE_DESTROYED) return;
+    if (this._pendingCancel) this._pendingCancel();
+    this._manualWebCallback = null;
+    if (this._popup && !this._popup.closed) this._popup.close();
     this._closeSession();
     try {
       this._iframeEl.remove();
@@ -418,6 +515,231 @@ class Session {
   }
 
   // -- internal --
+
+  _currentContext() {
+    return JSON.stringify([
+      this._config.tokenId, this._config.clientRefId, this._config.consumerEmail,
+      this._config.checkoutContext, this._config.authenticationAmount,
+      this._config.currencyCode, this._config.merchantName, this._config.merchantUrl, this._config.consumerLocale, this._config.callbackUrl,
+      this._config.apiBase, this._config._iframeOrigin,
+      this._requestID, this._sessionContext, this._browserData, this._dfpSessionID,
+      this._authContext, this.webChallenge,
+    ]);
+  }
+
+  _assertCurrent() {
+    if (this._state === STATE_DESTROYED) throw _verificationError("verification_cancelled", "Session has been destroyed");
+    if (typeof this._config.checkoutContext !== "string" || !this._config.checkoutContext ||
+        typeof this._config.getCheckoutContext !== "function") {
+      throw _verificationError("checkout_context_required", "Current checkout context is required for verification");
+    }
+    if (this._config.getCheckoutContext() !== this._config.checkoutContext || this._currentContext() !== this._contextSnapshot) {
+      throw _verificationError("checkout_context_changed", "Checkout context changed. Start a new session");
+    }
+  }
+
+  // Local sandbox recovery while the allowlisted callback host has no page.
+  submitSandboxCallbackUrl(value) {
+    _localOrigin(window.location.origin);
+    const pending = this._manualWebCallback;
+    if (!pending || this._state !== STATE_AUTHENTICATING) {
+      throw _verificationError("verification_not_pending", "Open 3DS verification before entering its return URL");
+    }
+    let returned;
+    try { returned = new URL(value); } catch {
+      throw _verificationError("invalid_callback", "Enter the complete Visa return URL");
+    }
+    const expected = pending.callback;
+    if (returned.origin !== expected.origin || returned.pathname !== expected.pathname || returned.hash ||
+        returned.username || returned.password ||
+        [...returned.searchParams.keys()].some((key) => !["attempt_id", "frontend_origin", "stepupresponse", "stepupauthcode"].includes(key)) ||
+        ["attempt_id", "frontend_origin", "stepupresponse", "stepupauthcode"].some((key) => returned.searchParams.getAll(key).length > 1) ||
+        returned.searchParams.get("attempt_id") !== pending.attempt ||
+        returned.searchParams.get("frontend_origin") !== window.location.origin) {
+      throw _verificationError("invalid_callback", "Return URL does not match this verification attempt");
+    }
+    const result = returned.searchParams.get("stepupresponse")?.toLowerCase();
+    if (!["approved", "declined", "failure"].includes(result)) {
+      throw _verificationError("invalid_callback", "Return URL has no valid verification result");
+    }
+    pending.deliver({ attempt_id: pending.attempt, stepupresponse: result,
+      ...(returned.searchParams.has("stepupauthcode") ? { stepupauthcode: returned.searchParams.get("stepupauthcode") } : {}) });
+  }
+
+  async _continueEurope() {
+    this._guardState(STATE_PREPARED, "authenticate");
+    this._assertCurrent();
+    const phase = this.preparationState;
+    if (!["web_challenge_pending", "registration_ready", "authentication_ready", "awaiting_payment"].includes(phase)) {
+      throw _verificationError("unsupported_context", "Visa did not return a supported verification context");
+    }
+    this._state = STATE_AUTHENTICATING;
+    try {
+      if (phase === "web_challenge_pending") return await this._verifyWebChallenge();
+      if (phase === "registration_ready") {
+        await this._runEuropeCeremony(false);
+        if (this._config.registrationOnly) {
+          this._state = STATE_COMPLETE;
+          this.preparationState = "registration_complete";
+          this._closeSession();
+          return { status: "registration_complete" };
+        }
+        const attrs = await this._continuationOptions("registration_complete", "AUTHENTICATE", "PAYMENT");
+        this._setPreparationResult(attrs);
+        if (this.preparationState !== "authentication_ready") {
+          throw _verificationError("unsupported_context", "Visa did not return PAYMENT authentication context");
+        }
+        this.preparationState = "awaiting_payment";
+        return { status: "awaiting_payment" };
+      }
+      const completed = await this._runEuropeCeremony(true);
+      const raw = completed.assuranceData;
+      const identifier = raw?.identifier ?? this._authContext.identifier;
+      if (!raw?.fidoBlob || !identifier) throw _verificationError("payment_evidence_unavailable", "Visa returned no PAYMENT evidence");
+      const assurance = _transformAssuranceData({ ...raw, identifier }, this._dfpSessionID);
+      assurance[0].verificationEntity = "10";
+      this._state = STATE_COMPLETE;
+      this.preparationState = "complete";
+      this._closeSession();
+      return assurance;
+    } catch (error) {
+      if (this._state !== STATE_DESTROYED) this._state = "failed";
+      this.preparationState = "failed";
+      throw error;
+    } finally {
+      this._pendingCancel = null;
+      this._manualWebCallback = null;
+      if (this._popup && !this._popup.closed) this._popup.close();
+      this._popup = null;
+      this._iframeEl.width = "0";
+      this._iframeEl.height = "0";
+      this._iframeEl.style.width = "0";
+      this._iframeEl.style.height = "0";
+    }
+  }
+
+  async _verifyWebChallenge() {
+    const callback = _callbackAddress(this._config.callbackUrl, this._config._mock);
+    const source = new URL(this.webChallenge.source);
+    if (source.protocol !== "https:" || source.username || source.password) {
+      throw _verificationError("unsupported_context", "Visa returned an unsupported challenge URL");
+    }
+    if (this._config._mock) _localOrigin(source.origin);
+    const attempt = crypto.randomUUID();
+    callback.searchParams.set("attempt_id", attempt);
+    callback.searchParams.set("frontend_origin", window.location.origin);
+    source.searchParams.set("wpcallback", callback.href);
+    this._popup = window.open("about:blank", "_blank", "popup,width=500,height=650");
+    if (!this._popup) throw _verificationError("popup_blocked", "Allow popups to continue verification");
+    const wait = _browserWait({ source: this._popup, origin: callback.origin, type: "vgs:3ds-result",
+      timeout: this._config.verificationTimeout, assertCurrent: () => this._assertCurrent(), checkClosed: true });
+    this._pendingCancel = wait.cancel;
+    if (["localhost", "127.0.0.1", "[::1]"].includes(window.location.hostname)) {
+      this._manualWebCallback = { callback, attempt, deliver: wait.deliverManual };
+    }
+    // The callback attempt is local correlation data. It contains no card or Visa session data.
+    this._popup.location.href = source.href;
+    let result;
+    try {
+      result = await wait.promise;
+    } finally { this._pendingCancel = null; }
+    if (result.attempt_id !== attempt) throw _verificationError("callback_attempt_mismatch", "Verification attempt does not match");
+    if (result.stepupresponse === "declined") throw _verificationError("verification_declined", "Issuer declined verification");
+    if (result.stepupresponse === "failure") throw _verificationError("verification_failed", "Issuer verification failed");
+    if (result.stepupresponse !== "approved") throw _verificationError("invalid_callback", "Invalid verification result");
+    if (result.stepupauthcode != null && (typeof result.stepupauthcode !== "string" || !result.stepupauthcode)) {
+      throw _verificationError("invalid_callback", "Invalid issuer authentication code");
+    }
+    const attrs = await this._continuationOptions("web_challenge", "REGISTER", "DEVICE_BINDING", result.stepupauthcode);
+    this._setPreparationResult(attrs);
+    if (this.preparationState !== "registration_ready") throw _verificationError("unsupported_context", "Visa did not return REGISTER context");
+    return { status: "registration_ready" };
+  }
+
+  async _continuationOptions(continuation, authType, reasonCode, issuerAuthCode) {
+    this._assertCurrent();
+    const result = await _postJson(this._config.apiBase,
+      `/agentic-tokens/${this._config.tokenId}/device-attestations`, {
+        data: { type: "device_attestations", attributes: {
+          browserData: this._browserData, sessionContext: this._sessionContext,
+          client_ref_id: this._config.clientRefId, consumer_email: this._config.consumerEmail,
+          preparation: true, continuation, auth_type: authType, reason_code: reasonCode,
+          ...(issuerAuthCode ? { issuer_auth_code: issuerAuthCode } : {}),
+          ...(this._config.authenticationAmount != null ? { authentication_amount: this._config.authenticationAmount } : {}),
+          ...(this._config.currencyCode != null ? { currency_code: this._config.currencyCode } : {}),
+          ...(this._config.merchantName ? { merchant_name: this._config.merchantName } : {}),
+          ...(this._config.merchantUrl ? { merchant_url: this._config.merchantUrl } : {}),
+          consumer_locale: this._config.consumerLocale,
+        } },
+      }, this._config.accessToken);
+    this._assertCurrent();
+    return result.data.attributes;
+  }
+
+  async _runEuropeCeremony(payment) {
+    this._assertCurrent();
+    if (this._authContext?.action !== (payment ? "AUTHENTICATE" : "REGISTER")) {
+      throw _verificationError("unsupported_context", "Visa verification phase does not match");
+    }
+    let target = this._iframeEl.contentWindow;
+    let requestID = this._requestID;
+    if (payment) {
+      this._popup = window.open("about:blank", "_blank", "popup,width=400,height=480");
+      if (!this._popup) throw _verificationError("popup_blocked", "Allow popups to authenticate payment");
+      const ready = _browserWait({ source: this._popup, origin: this._config._iframeOrigin, type: "AUTH_READY",
+        timeout: this._config.timeout, assertCurrent: () => this._assertCurrent(), checkClosed: true });
+      this._pendingCancel = ready.cancel;
+      this._popup.location.href = this._iframeEl.src;
+      requestID = (await ready.promise).requestID;
+      if (typeof requestID !== "string" || !requestID) throw _verificationError("unsupported_context", "Missing popup requestID");
+      target = this._popup;
+    } else {
+      this._iframeEl.width = "350";
+      this._iframeEl.height = "450";
+      this._iframeEl.style.width = "350px";
+      this._iframeEl.style.height = "450px";
+    }
+    const complete = _browserWait({ source: target, origin: this._config._iframeOrigin, type: "AUTH_COMPLETE", requestID,
+      timeout: this._config.verificationTimeout, assertCurrent: () => this._assertCurrent(), checkClosed: payment });
+    this._pendingCancel = complete.cancel;
+    target.postMessage({ requestID, version: "1", contentType: "application/json", type: "AUTHENTICATE",
+      authenticationContext: this._authContext }, this._config._iframeOrigin);
+    const result = await complete.promise;
+    this._assertCurrent();
+    if (result.result !== "COMPLETE") throw _verificationError("verification_incomplete", "Visa verification did not complete");
+    return result;
+  }
+
+  _setPreparationResult(attrs) {
+    this._state = STATE_PREPARED;
+    this.needsOtp = false;
+    this.otpMethods = [];
+    this._authContext = attrs.authenticationContext;
+    this.authenticationAction = this._authContext?.action || null;
+    this.needsWebChallenge = false;
+    this.webChallenge = null;
+    if (attrs.status === "CHALLENGE" || attrs.result === "CHALLENGE") {
+      const methods = Array.isArray(attrs.stepUpRequest) ? attrs.stepUpRequest : [];
+      this.webChallenge = methods.find(
+        (method) => method.method === "APP-TO-APP" && method.platformType === "WEB",
+      ) || null;
+      this.needsWebChallenge = this.webChallenge !== null;
+      this.otpMethods = methods.filter(
+        (method) => ["OTPSMS", "OTPEMAIL", "OTPONLINEBANKING"].includes(method.method),
+      );
+      this.needsOtp = !this.needsWebChallenge && this.otpMethods.length > 0;
+      this.preparationState = this.needsWebChallenge ? "web_challenge_pending"
+        : this.needsOtp ? "otp_challenge_pending" : "unsupported_challenge";
+    } else {
+      const completeContext = ["endpoint", "identifier", "payload"].every(
+        (field) => typeof this._authContext?.[field] === "string" && this._authContext[field].length > 0,
+      );
+      this.preparationState = !completeContext ? "unsupported_context"
+        : this.authenticationAction === "AUTHENTICATE" ? "authentication_ready"
+        : this.authenticationAction === "REGISTER" ? "registration_ready" : "unsupported_context";
+    }
+    this._contextSnapshot = this._currentContext();
+  }
 
   _guardState(expected, method) {
     if (this._state === STATE_DESTROYED) {
@@ -459,10 +781,24 @@ class VgsAgenticAuth {
    * @param {string} options.consumerEmail Consumer email address for identity verification
    * @param {string} [options.accessToken] Bearer token for API authentication
    * @param {string} [options.clientRefId] Unique trace ID (auto-generated if omitted)
-   * @param {number} [options.timeout]     Timeout in ms for iframe operations (default 30000)
+   * @param {string} [options.preparationMode] Use "vic-v2-europe" to stop before user verification.
+   * @param {boolean} [options.registrationOnly] Finish after registration. Authenticate a purchase in a separate session.
+   * @param {string} [options.authenticationAmount] Amount in major currency units for verification.
+   * @param {string} [options.currencyCode] Currency code for the current purchase.
+   * @param {string} [options.merchantName] Merchant name for verification.
+   * @param {string} [options.merchantUrl] HTTPS merchant application URL for verification.
+   * @param {string} [options.consumerLocale] Consumer language and country, such as en_US.
+   * @param {string} [options.callbackUrl] HTTPS return page for browser verification.
+   * @param {string} [options.checkoutContext] Current buyer, card, and checkout key.
+   * @param {Function} [options.getCheckoutContext] Read the current checkout key before continuation.
+   * @param {string} [options.mockVppOrigin] Exact loopback provider origin for local simulation.
+   * @param {string} [options.mockApiBase] Exact loopback API origin for local simulation.
+   * @param {number} [options.timeout] Timeout in ms for iframe setup and browser verification.
+   * Europe verification has no default time limit. Iframe setup and legacy verification default to 30000 ms.
    */
   constructor({ tokenId, environment, consumerEmail, accessToken, clientRefId, timeout,
-                authenticationAmount, currencyCode, merchantName } = {}) {
+                authenticationAmount, currencyCode, merchantName, merchantUrl, consumerLocale = "en_US", preparationMode,
+                mockVppOrigin, mockApiBase, callbackUrl, checkoutContext, getCheckoutContext, startDeviceBinding = false, registrationOnly = false } = {}) {
     if (!tokenId) throw new VgsAgenticAuthError("tokenId is required");
     if (!environment) throw new VgsAgenticAuthError("environment is required");
     if (!consumerEmail) throw new VgsAgenticAuthError("consumerEmail is required");
@@ -474,17 +810,45 @@ class VgsAgenticAuth {
       );
     }
 
+    if (preparationMode !== undefined && preparationMode !== "vic-v2-europe") {
+      throw new VgsAgenticAuthError("Unknown preparationMode");
+    }
+    if (startDeviceBinding && preparationMode !== "vic-v2-europe") {
+      throw new VgsAgenticAuthError("New device binding requires Europe preparation");
+    }
+    if (typeof registrationOnly !== "boolean" || (registrationOnly && preparationMode !== "vic-v2-europe")) {
+      throw new VgsAgenticAuthError("Registration-only sessions require Europe preparation and a boolean option");
+    }
+    this.registrationOnly = registrationOnly;
+    this.startDeviceBinding = startDeviceBinding;
+    this.preparationMode = preparationMode || null;
+    if (mockVppOrigin !== undefined || mockApiBase !== undefined) {
+      if (environment !== "local" || !mockVppOrigin) {
+        throw new VgsAgenticAuthError("Mock origins require the local environment and mockVppOrigin");
+      }
+      _localOrigin(window.location.origin);
+      _localOrigin(mockVppOrigin);
+      _localOrigin(mockApiBase === undefined ? env.apiBase : mockApiBase);
+    }
+
+    this.callbackUrl = callbackUrl;
+    this.checkoutContext = checkoutContext;
+    this.getCheckoutContext = getCheckoutContext;
+    this._mock = Boolean(mockVppOrigin);
     this.tokenId = tokenId;
     this.consumerEmail = consumerEmail;
-    this.apiBase = env.apiBase;
+    this.apiBase = mockApiBase || env.apiBase;
     this.accessToken = accessToken || null;
     this.clientRefId = clientRefId || crypto.randomUUID();
     this.timeout = timeout ?? 30_000;
-    this._iframeOrigin = env.iframeOrigin;
+    this.verificationTimeout = timeout;
+    this._iframeOrigin = mockVppOrigin || env.iframeOrigin;
     this._apiKey = env.apiKey;
-    this.authenticationAmount = authenticationAmount || "100";
-    this.currencyCode = currencyCode || "840";
+    this.authenticationAmount = this.preparationMode ? authenticationAmount : authenticationAmount || "100";
+    this.currencyCode = this.preparationMode ? currencyCode : currencyCode || "840";
     this.merchantName = merchantName || null;
+    this.merchantUrl = merchantUrl || null;
+    this.consumerLocale = consumerLocale;
   }
 
   /**
@@ -503,35 +867,47 @@ class VgsAgenticAuth {
     container = container || document.body;
 
     // Create iframe and start listening for AUTH_READY before it loads
+    let iframeEl;
     const readyPromise = _waitForIframeMessage(
       this._iframeOrigin,
       "AUTH_READY",
       this.timeout,
+      this.preparationMode ? { source: () => iframeEl?.contentWindow } : undefined,
     );
 
-    const iframeEl = _createIframe(container, this._iframeOrigin, this._apiKey);
+    iframeEl = _createIframe(container, this._iframeOrigin, this._apiKey, this.preparationMode);
 
     let requestID;
     try {
       const readyData = await readyPromise;
       requestID = readyData.requestID;
+      if (this.preparationMode && (typeof requestID !== "string" || !requestID)) {
+        throw new VgsAgenticAuthError("Missing browser session requestID");
+      }
     } catch (err) {
       iframeEl.remove();
       throw err;
     }
 
-    // Create auth session
-    _sendIframeCommand(iframeEl, this._iframeOrigin, requestID, {
-      type: "CREATE_AUTH_SESSION",
-    });
-
     let sessionData;
     try {
-      sessionData = await _waitForIframeMessage(
+      const sessionPromise = _waitForIframeMessage(
         this._iframeOrigin,
         "AUTH_SESSION_CREATED",
         this.timeout,
+        this.preparationMode ? { source: () => iframeEl.contentWindow, requestID } : undefined,
       );
+      _sendIframeCommand(iframeEl, this._iframeOrigin, requestID, {
+        type: "CREATE_AUTH_SESSION",
+        ...(this.preparationMode ? { client: { id: this._apiKey } } : {}),
+      });
+      sessionData = await sessionPromise;
+      if (this.preparationMode && (
+        sessionData.result !== "COMPLETE" || !sessionData.sessionContext?.secureToken ||
+        !sessionData.browserData || !sessionData.dfpSessionID
+      )) {
+        throw new VgsAgenticAuthError("Incomplete browser session context");
+      }
     } catch (err) {
       try {
         _sendIframeCommand(iframeEl, this._iframeOrigin, requestID, {
@@ -562,9 +938,11 @@ class VgsAgenticAuth {
               consumer_email: this.consumerEmail,
               auth_type: "AUTHENTICATE",
               reason_code: "PAYMENT",
-              authentication_amount: this.authenticationAmount,
-              currency_code: this.currencyCode,
+              ...(this.preparationMode ? { preparation: true, consumer_locale: this.consumerLocale, ...(this.startDeviceBinding ? { start_device_binding: true } : {}) } : {}),
+              ...(this.authenticationAmount != null ? { authentication_amount: this.authenticationAmount } : {}),
+              ...(this.currencyCode != null ? { currency_code: this.currencyCode } : {}),
               ...(this.merchantName ? { merchant_name: this.merchantName } : {}),
+              ...(this.preparationMode && this.merchantUrl ? { merchant_url: this.merchantUrl } : {}),
             },
           },
         },

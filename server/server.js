@@ -1,10 +1,12 @@
+import { installMockCheckoutRoutes } from "./mock-checkout.js";
+import { europeBrowserConfig } from "./europe-config.js";
 import express from "express";
-import { config as loadEnv } from "dotenv";
-import { config as vgsConfig, callVgs, getAccessToken, hasCredentials } from "./vgs.js";
+import { installV2Routes } from "./v2-adapter.js";
+import { installDeviceBindingRoutes } from "./device-bindings.js";
+import { config as vgsConfig, callVgs, getAccessToken, hasCredentials, mockConfig, setMockProfile } from "./vgs.js";
+import { installMockRoutes, mockBrowserConfig } from "./local-mock.js";
 import { enrichCardSurface, enrichMissingCardSurfaces } from "./card-surface.js";
 import { getOtpOptions, sendOrVerifyOtp } from "./otp.js";
-
-loadEnv();
 
 const app = express();
 app.use((req, res, next) => {
@@ -21,8 +23,12 @@ app.use((err, req, res, next) => {
   }
   next(err);
 });
+const mockCards = installMockRoutes(app, { mockConfig, callVgs, onScenarioChanged: setMockProfile });
+installV2Routes(app, { callVgs, apiUrl: vgsConfig.apiUrl });
+installDeviceBindingRoutes(app, { callVgs, apiUrl: vgsConfig.apiUrl });
 
 const PORT = process.env.PORT || 3000;
+installMockCheckoutRoutes(app, { mockConfig, cards: mockCards, visaAgent: process.env.AGENTIC_VISA_AGENT, port: PORT });
 
 function handler(fn) {
   return async (req, res) => {
@@ -48,9 +54,11 @@ app.get("/api/token", handler(async (req, res) => {
 // Keeps client builds env-agnostic: no Vite rebuild required when the vault changes.
 app.get("/api/config", (req, res) => {
   res.json({
+    ...mockBrowserConfig(mockConfig),
+    ...europeBrowserConfig(),
     vaultId: vgsConfig.vaultId,
     vaultEnv: vgsConfig.vaultEnv,
-    collectJsUrl: process.env.VGS_COLLECT_JS || "https://js.verygoodvault.com/vgs-collect/4.0.0/vgs-collect.js",
+    collectJsUrl: mockConfig ? "" : process.env.VGS_COLLECT_JS || "https://js.verygoodvault.com/vgs-collect/4.0.0/vgs-collect.js",
   });
 });
 
@@ -61,7 +69,7 @@ app.get("/api/config", (req, res) => {
 app.post("/api/cards/:cardId/agentic-tokens", handler(async (req, res) => {
   const { status, data } = await callVgs(
     vgsConfig.apiUrl, "POST",
-    `/cards/${req.params.cardId}/agentic-tokens`,
+    `/cards/${encodeURIComponent(req.params.cardId)}/agentic-tokens`,
     req.body
   );
   res.status(status).json(data);

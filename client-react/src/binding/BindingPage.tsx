@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { fetchAccessToken } from "../api";
+import { fetchAccessToken, fetchConfig } from "../api";
 import { Button, Field, Row } from "../components/ui";
 
 const SANDBOX_OTP = "456789";
@@ -82,6 +82,8 @@ export function BindingPage() {
     setStatus("starting");
     setError(null);
     try {
+      const config = await fetchConfig();
+      if (config.mockMode) throw new Error("This checkout page is disabled in local mock mode. Open / to prepare a synthetic card.");
       const accessToken = await fetchAccessToken();
       const clientRefId = crypto.randomUUID();
 

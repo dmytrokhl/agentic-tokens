@@ -29,6 +29,7 @@ export default defineConfig({
         main: resolve(__dirname, 'index.html'),
         collect: resolve(__dirname, 'collect.html'),
         binding: resolve(__dirname, 'binding.html'),
+        visaCallback: resolve(__dirname, 'visa-3ds-callback.html'),
       },
     },
   },

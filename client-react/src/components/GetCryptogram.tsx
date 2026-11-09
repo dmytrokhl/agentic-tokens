@@ -7,15 +7,7 @@ import { useAppState, useStepStatus } from "../useAppState";
 import { CRYPTOGRAM_STYLE } from "../flow";
 import { Step } from "./Step";
 import { Field, Row, Button } from "./ui";
-
-const CURRENCY_CODES = [
-  { value: "840", label: "840 - USD" },
-  { value: "978", label: "978 - EUR" },
-  { value: "826", label: "826 - GBP" },
-  { value: "392", label: "392 - JPY" },
-  { value: "036", label: "036 - AUD" },
-  { value: "124", label: "124 - CAD" },
-] as const;
+import { CurrencyField } from "./CurrencyField";
 
 export function GetCryptogram() {
   const { state, setState, log, setLoading, completeStep } = useAppState();
@@ -41,7 +33,7 @@ export function GetCryptogram() {
 
   // Mastercard SCOF and Amex ACE share amount and currency fields.
   const [cardScopedAmount, setCardScopedAmount] = useState("5.33");
-  const [cardScopedCurrency, setCardScopedCurrency] = useState<string>(CURRENCY_CODES[0].value);
+  const [cardScopedCurrency, setCardScopedCurrency] = useState("840");
   const [cardScopedMerchant, setCardScopedMerchant] = useState("Best Buy");
 
   const agentPlatform = state.agentContext.llm_platform ?? "OPEN_AI";
@@ -195,13 +187,7 @@ export function GetCryptogram() {
               <Field label="Transaction Amount">
                 <input className="input" value={cardScopedAmount} onChange={(e) => setCardScopedAmount(e.target.value)} />
               </Field>
-              <Field label="Currency">
-                <select className="input" value={cardScopedCurrency} onChange={(e) => setCardScopedCurrency(e.target.value)}>
-                  {CURRENCY_CODES.map((currency) => (
-                    <option key={currency.value} value={currency.value}>{currency.label}</option>
-                  ))}
-                </select>
-              </Field>
+              <CurrencyField numeric value={cardScopedCurrency} onChange={setCardScopedCurrency} />
             </Row>
             {!isAmex && <Field label="Merchant Name">
               <input className="input" value={cardScopedMerchant} onChange={(e) => setCardScopedMerchant(e.target.value)} />
@@ -219,9 +205,7 @@ export function GetCryptogram() {
               <Field label="Transaction Amount">
                 <input className="input" value={txnAmount} onChange={(e) => setTxnAmount(e.target.value)} />
               </Field>
-              <Field label="Currency">
-                <input className="input" value={txnCurrency} onChange={(e) => setTxnCurrency(e.target.value)} />
-              </Field>
+              <CurrencyField value={txnCurrency} onChange={setTxnCurrency} />
             </Row>
             <Row>
               <Field label="Merchant Name">

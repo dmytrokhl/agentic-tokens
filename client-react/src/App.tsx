@@ -12,8 +12,11 @@ import { GetCryptogram } from "./components/GetCryptogram";
 import { ConfirmTransaction } from "./components/ConfirmTransaction";
 import { DeleteEnrollment } from "./components/DeleteEnrollment";
 import { Log } from "./components/Log";
+import { EuropeSample } from "./components/EuropeSample";
+import { isEuropeSample } from "./sample-journeys";
 
 export default function App() {
+  if (isEuropeSample(window.location.search)) return <EuropeSample />;
   return (
     <AppStateProvider>
       <AppContent />
@@ -58,6 +61,8 @@ function AppContent() {
         </button>
       </div>
       <p className="text-gray-500 text-sm mb-4">Step-by-step integration reference for the VGS Agentic Tokens API</p>
+
+      <p className="text-sm mb-4"><a className="text-blue-700 underline" href="?flow=visa-v2-europe">Visa v2 Europe</a></p>
 
       <FlowIndicator verification={state.network === "mastercard" && state.tokenId ? "otp" : state.cardholderVerification} />
 
